@@ -1,8 +1,7 @@
 /**
- * Chawk Bazar — Square API Proxy Server (v2)
+ * Chawk Bazar — Square API Proxy Server (v3)
  * ─────────────────────────────────────────
- * Token is stored securely as a Render environment variable.
- * No token is ever passed through the browser.
+ * Token and location IDs stored securely as Render environment variables.
  */
 
 const http  = require('http');
@@ -28,12 +27,16 @@ const server = http.createServer((req, res) => {
 
   // Health check
   if (req.method === 'GET' && req.url === '/') {
+    const locationIds = process.env.SQUARE_LOCATION_IDS
+      ? process.env.SQUARE_LOCATION_IDS.split(',').map(s => s.trim()).filter(Boolean)
+      : [];
     res.writeHead(200, { ...CORS_HEADERS, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'ok',
-      service: 'Chawk Bazar Square Proxy v2',
+      service: 'Chawk Bazar Square Proxy v3',
       token_configured: !!process.env.SQUARE_ACCESS_TOKEN,
       environment: process.env.SQUARE_ENVIRONMENT || 'production',
+      locations_configured: locationIds.length,
       time: new Date().toISOString(),
     }));
     return;
@@ -45,7 +48,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Token: env var takes priority, fallback to Authorization header
   const token = process.env.SQUARE_ACCESS_TOKEN
     || (req.headers['authorization'] || '').replace('Bearer ', '').trim();
 
@@ -65,11 +67,27 @@ const server = http.createServer((req, res) => {
 
   const squarePath = (!req.url || req.url === '/') ? '/v2/orders/search' : req.url;
 
-  console.log(`[${new Date().toISOString()}] ${req.method} ${squarePath} → ${squareHost} (token: ${token.slice(0,8)}...)`);
+  console.log(`[${new Date().toISOString()}] ${req.method} ${squarePath}`);
 
   let body = '';
   req.on('data', chunk => { body += chunk; });
   req.on('end', () => {
+
+    // If this is an orders search, inject location IDs from env if available
+    if (squarePath === '/v2/orders/search' && body && process.env.SQUARE_LOCATION_IDS) {
+      try {
+        const locationIds = process.env.SQUARE_LOCATION_IDS
+          .split(',').map(s => s.trim()).filter(Boolean);
+        const parsed = JSON.parse(body);
+        // Override location_ids with the env var values
+        parsed.location_ids = locationIds;
+        body = JSON.stringify(parsed);
+        console.log(`[${new Date().toISOString()}] Injecting ${locationIds.length} location IDs`);
+      } catch (e) {
+        console.error('Could not parse body to inject location IDs:', e.message);
+      }
+    }
+
     const options = {
       hostname: squareHost,
       port:     443,
@@ -79,7 +97,7 @@ const server = http.createServer((req, res) => {
         'Content-Type':   'application/json',
         'Authorization':  `Bearer ${token}`,
         'Square-Version': '2024-01-18',
-        'User-Agent':     'ChawkBazar-Proxy/2.0',
+        'User-Agent':     'ChawkBazar-Proxy/3.0',
       },
     };
     if (body) options.headers['Content-Length'] = Buffer.byteLength(body);
@@ -106,11 +124,15 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
+  const locationIds = process.env.SQUARE_LOCATION_IDS
+    ? process.env.SQUARE_LOCATION_IDS.split(',').map(s => s.trim()).filter(Boolean)
+    : [];
   console.log('');
-  console.log('  Chawk Bazar — Square Proxy v2');
+  console.log('  Chawk Bazar — Square Proxy v3');
   console.log('  ────────────────────────────────────');
   console.log(`  Port:        ${PORT}`);
   console.log(`  Token set:   ${!!process.env.SQUARE_ACCESS_TOKEN}`);
   console.log(`  Environment: ${process.env.SQUARE_ENVIRONMENT || 'production'}`);
+  console.log(`  Locations:   ${locationIds.length} configured`);
   console.log('  ────────────────────────────────────');
 });
